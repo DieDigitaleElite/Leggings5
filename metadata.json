@@ -1,0 +1,7 @@
+{
+  "name": "Better Future Collection Virtual Try-On",
+  "description": "An innovative virtual try-on application for the Better Future Collection. Customers can upload their photo and instantly see themselves wearing selected outfits using advanced Gemini AI.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

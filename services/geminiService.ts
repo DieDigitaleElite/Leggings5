@@ -21,11 +21,9 @@ export async function estimateSizeFromImage(userBase64: string, productName: str
   const userMimeType = getMimeType(userBase64);
   const cleanUserBase64 = getCleanBase64(userBase64);
 
-  const apiKey = process.env.API_KEY?.trim();
-  if (!apiKey || apiKey === "undefined") return 'M';
-
   try {
-    const ai = new GoogleGenAI({ apiKey });
+    // WICHTIG: Der API_KEY muss direkt im Konstruktor ohne Zwischenvariable stehen
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: {
@@ -55,15 +53,9 @@ export async function performVirtualTryOn(userBase64: string, productBase64: str
   const cleanUserBase64 = getCleanBase64(userBase64);
   const cleanProductBase64 = getCleanBase64(productBase64);
 
-  const apiKey = process.env.API_KEY?.trim();
-
-  if (!apiKey || apiKey === "undefined" || apiKey === "") {
-    throw new Error("API_KEY fehlt. Bitte in den Vercel Settings unter 'Environment Variables' den Namen API_KEY mit deinem Key anlegen.");
-  }
-
   try {
-    // Instanz immer frisch mit dem bereinigten Key erstellen
-    const ai = new GoogleGenAI({ apiKey });
+    // Direktes Instanziieren gemäß Google SDK Spezifikation für Web-Umgebungen
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
     const promptText = `
       VIRTUAL TRY-ON TASK.
@@ -101,17 +93,16 @@ export async function performVirtualTryOn(userBase64: string, productBase64: str
 
     throw new Error("Das KI-Ergebnis enthielt keine Bilddaten.");
   } catch (error: any) {
-    console.error("Gemini API Error:", error);
+    console.error("Gemini API Error Detail:", error);
     
-    const status = error.status || "";
     const message = error.message || "";
 
-    if (message.includes("API key not valid") || status === "INVALID_ARGUMENT" || message.includes("400")) {
-      throw new Error("API Key ungültig. Bitte lösche den Key in Vercel, kopiere ihn NEU aus AI Studio und mache einen 'Redeploy'.");
+    if (message.includes("API key not valid") || message.includes("400")) {
+      throw new Error("API Key Fehler: Der Hoster konnte den Key nicht korrekt in die App einfügen. Bitte stelle sicher, dass die Variable 'API_KEY' in Vercel ohne Anführungszeichen gespeichert wurde und führe einen 'Redeploy' durch.");
     }
     
-    if (status === "PERMISSION_DENIED" || message.includes("403") || message.includes("location")) {
-      throw new Error("Zugriff verweigert (403). In der EU ist der kostenlose Gemini-Plan oft eingeschränkt. Bitte aktiviere 'Billing' in deinem Google Cloud Projekt.");
+    if (message.includes("403") || message.includes("location")) {
+      throw new Error("Regions-Beschränkung: Die Gemini API (Free Tier) ist in einigen EU-Ländern eingeschränkt. Bitte aktiviere Billing in deinem Google Cloud Projekt, um diese Sperre aufzuheben.");
     }
 
     throw new Error(message || "Ein technischer Fehler ist aufgetreten.");

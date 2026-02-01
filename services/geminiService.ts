@@ -15,21 +15,23 @@ function getCleanBase64(dataUrl: string): string {
 }
 
 /**
- * Analysiert das Bild des Nutzers und gibt eine fundierte Größenempfehlung ab.
+ * Analysiert das Bild des Nutzers für eine Größenempfehlung.
  */
 export async function estimateSizeFromImage(userBase64: string, productName: string): Promise<string> {
-  const userMimeType = getMimeType(userBase64);
-  const cleanUserBase64 = getCleanBase64(userBase64);
-
   try {
-    // WICHTIG: Der API_KEY muss direkt im Konstruktor ohne Zwischenvariable stehen
+    // Strikt nach Vorgabe initialisieren
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: APP_CONFIG.MODEL_NAME,
       contents: {
         parts: [
-          { inlineData: { data: cleanUserBase64, mimeType: userMimeType } },
-          { text: `Analyze the person's body shape in the image and recommend a size for "${productName}". Options: [XS, S, M, L, XL, XXL]. Return ONLY the size code.` },
+          { 
+            inlineData: { 
+              data: getCleanBase64(userBase64), 
+              mimeType: getMimeType(userBase64) 
+            } 
+          },
+          { text: `Estimate body size for product "${productName}". Options: [XS, S, M, L, XL, XXL]. Return ONLY the size code.` },
         ],
       },
     });
@@ -37,52 +39,51 @@ export async function estimateSizeFromImage(userBase64: string, productName: str
     const size = response.text?.trim().toUpperCase();
     const validSizes = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
     return validSizes.includes(size || '') ? (size || 'M') : 'M';
-  } catch (error: any) {
+  } catch (error) {
     console.error("Size Estimation Error:", error);
     return 'M';
   }
 }
 
 /**
- * Erstellt die virtuelle Anprobe. 
+ * Erstellt die virtuelle Anprobe.
  */
 export async function performVirtualTryOn(userBase64: string, productBase64: string, productName: string): Promise<string> {
-  const userMimeType = getMimeType(userBase64);
-  const productMimeType = getMimeType(productBase64);
-  
-  const cleanUserBase64 = getCleanBase64(userBase64);
-  const cleanProductBase64 = getCleanBase64(productBase64);
+  // Überprüfung ob der Key überhaupt vorhanden ist (bevor der Request rausgeht)
+  if (!process.env.API_KEY || process.env.API_KEY === "undefined") {
+    throw new Error("API_KEY ist im Browser nicht verfügbar. Bitte stelle sicher, dass die Umgebungsvariable 'API_KEY' korrekt gesetzt und die App neu deployed wurde.");
+  }
 
   try {
-    // Direktes Instanziieren gemäß Google SDK Spezifikation für Web-Umgebungen
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
-    const promptText = `
-      VIRTUAL TRY-ON TASK.
-      Apply the clothing from Image 2 to the person in Image 1.
-      Product: "${productName}".
-      The output must be a photo of the person wearing the new outfit.
-      Keep person, background and face exactly as in Image 1.
-    `;
+    const promptText = `VIRTUAL TRY-ON: Place the outfit from the second image onto the person in the first image. 
+    Product: ${productName}. Keep the person's face, pose, and the background identical to the first image. 
+    Output the final image where the person is wearing the new outfit.`;
 
     const response = await ai.models.generateContent({
       model: APP_CONFIG.MODEL_NAME,
       contents: {
         parts: [
-          { inlineData: { data: cleanUserBase64, mimeType: userMimeType } },
-          { inlineData: { data: cleanProductBase64, mimeType: productMimeType } },
+          { 
+            inlineData: { 
+              data: getCleanBase64(userBase64), 
+              mimeType: getMimeType(userBase64) 
+            } 
+          },
+          { 
+            inlineData: { 
+              data: getCleanBase64(productBase64), 
+              mimeType: getMimeType(productBase64) 
+            } 
+          },
           { text: promptText },
         ],
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "3:4"
-        }
       }
     });
 
-    if (!response || !response.candidates?.[0]?.content?.parts) {
-      throw new Error("Die KI hat kein Bild generiert.");
+    if (!response?.candidates?.[0]?.content?.parts) {
+      throw new Error("Die KI hat keine Bilddaten zurückgegeben.");
     }
 
     for (const part of response.candidates[0].content.parts) {
@@ -91,21 +92,18 @@ export async function performVirtualTryOn(userBase64: string, productBase64: str
       }
     }
 
-    throw new Error("Das KI-Ergebnis enthielt keine Bilddaten.");
+    throw new Error("Das Ergebnis enthielt keine gültigen Bilddaten.");
   } catch (error: any) {
-    console.error("Gemini API Error Detail:", error);
+    console.error("Gemini API Error:", error);
     
+    const status = error.status || "";
     const message = error.message || "";
 
-    if (message.includes("API key not valid") || message.includes("400")) {
-      throw new Error("API Key Fehler: Der Hoster konnte den Key nicht korrekt in die App einfügen. Bitte stelle sicher, dass die Variable 'API_KEY' in Vercel ohne Anführungszeichen gespeichert wurde und führe einen 'Redeploy' durch.");
+    if (message.includes("API key not valid") || status === "INVALID_ARGUMENT") {
+      throw new Error("Der API Key wird von Google als ungültig abgelehnt. Bitte prüfe in der Google AI Studio Console, ob der Key aktiv ist und keine Einschränkungen (Restrictions) hat.");
     }
     
-    if (message.includes("403") || message.includes("location")) {
-      throw new Error("Regions-Beschränkung: Die Gemini API (Free Tier) ist in einigen EU-Ländern eingeschränkt. Bitte aktiviere Billing in deinem Google Cloud Projekt, um diese Sperre aufzuheben.");
-    }
-
-    throw new Error(message || "Ein technischer Fehler ist aufgetreten.");
+    throw new Error(message || "Ein Fehler bei der Bildgenerierung ist aufgetreten.");
   }
 }
 
@@ -133,7 +131,7 @@ export async function urlToBase64(url: string): Promise<string> {
         resolve(canvas.toDataURL('image/png'));
       } else reject(new Error("Canvas Error"));
     };
-    img.onerror = () => reject(new Error("Bild konnte nicht geladen werden."));
+    img.onerror = () => reject(new Error("Bild-Ladefehler"));
     img.src = `https://images.weserv.nl/?url=${encodeURIComponent(url)}`;
   });
 }

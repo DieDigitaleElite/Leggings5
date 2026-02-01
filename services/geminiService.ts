@@ -21,26 +21,17 @@ export async function estimateSizeFromImage(userBase64: string, productName: str
   const userMimeType = getMimeType(userBase64);
   const cleanUserBase64 = getCleanBase64(userBase64);
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const promptText = `
-    Analyze the person's body shape in the image.
-    Recommend the best fit size for this product: "${productName}".
-    Available sizes: [XS, S, M, L, XL, XXL].
-    
-    IMPORTANT: Be realistic. If the person has a curvy or strong build, choose L, XL, or XXL. 
-    Avoid choosing 'M' by default.
-    
-    Response format: Only return the size code (e.g., "XL"). No extra text.
-  `;
+  const apiKey = process.env.API_KEY?.trim();
+  if (!apiKey || apiKey === "undefined") return 'M';
 
   try {
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: {
         parts: [
           { inlineData: { data: cleanUserBase64, mimeType: userMimeType } },
-          { text: promptText },
+          { text: `Analyze the person's body shape in the image and recommend a size for "${productName}". Options: [XS, S, M, L, XL, XXL]. Return ONLY the size code.` },
         ],
       },
     });
@@ -48,7 +39,7 @@ export async function estimateSizeFromImage(userBase64: string, productName: str
     const size = response.text?.trim().toUpperCase();
     const validSizes = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
     return validSizes.includes(size || '') ? (size || 'M') : 'M';
-  } catch (error) {
+  } catch (error: any) {
     console.error("Size Estimation Error:", error);
     return 'M';
   }
@@ -56,7 +47,6 @@ export async function estimateSizeFromImage(userBase64: string, productName: str
 
 /**
  * Erstellt die virtuelle Anprobe. 
- * Fokus: 100% Design-Treue und vollständiges Set (Top + Bottom).
  */
 export async function performVirtualTryOn(userBase64: string, productBase64: string, productName: string): Promise<string> {
   const userMimeType = getMimeType(userBase64);
@@ -65,27 +55,24 @@ export async function performVirtualTryOn(userBase64: string, productBase64: str
   const cleanUserBase64 = getCleanBase64(userBase64);
   const cleanProductBase64 = getCleanBase64(productBase64);
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  // Präziser Prompt für Design-Konsistenz
-  const promptText = `
-    VIRTUAL TRY-ON TASK - HIGH PRECISION REQUIRED.
-    
-    OBJECTIVE:
-    Dress the person in Image 1 with the COMPLETE 2-PIECE SET shown in Image 2.
-    The product is: "${productName}".
-    
-    STRICT RULES:
-    1. COMPLETE OUTFIT: You MUST apply BOTH the Top (sports bra/crop top) and the Bottom (leggings/pants) from Image 2. 
-    2. DESIGN INTEGRITY: Keep all seams, textures, colors, and cut-outs exactly as they appear in Image 2. DO NOT add pockets, logos, or change the stitching.
-    3. ZERO HALLUCINATION: Do not invent new clothing parts. Use only what is visible in the reference image.
-    4. PRESERVE IDENTITY: Keep the person's face, hair, skin tone, hands, and the original background from Image 1 100% identical.
-    5. PERFECT FIT: Drape the fabric realistically over the person's body shape.
-    
-    Return the result as a high-quality synthesized image.
-  `;
+  const apiKey = process.env.API_KEY?.trim();
+
+  if (!apiKey || apiKey === "undefined" || apiKey === "") {
+    throw new Error("API_KEY fehlt. Bitte in den Vercel Settings unter 'Environment Variables' den Namen API_KEY mit deinem Key anlegen.");
+  }
 
   try {
+    // Instanz immer frisch mit dem bereinigten Key erstellen
+    const ai = new GoogleGenAI({ apiKey });
+    
+    const promptText = `
+      VIRTUAL TRY-ON TASK.
+      Apply the clothing from Image 2 to the person in Image 1.
+      Product: "${productName}".
+      The output must be a photo of the person wearing the new outfit.
+      Keep person, background and face exactly as in Image 1.
+    `;
+
     const response = await ai.models.generateContent({
       model: APP_CONFIG.MODEL_NAME,
       contents: {
@@ -103,22 +90,31 @@ export async function performVirtualTryOn(userBase64: string, productBase64: str
     });
 
     if (!response || !response.candidates?.[0]?.content?.parts) {
-      throw new Error("Fehler bei der Bildgenerierung.");
+      throw new Error("Die KI hat kein Bild generiert.");
     }
 
-    let generatedImageUrl: string | null = null;
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData?.data) {
-        generatedImageUrl = `data:image/png;base64,${part.inlineData.data}`;
-        break;
+        return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
 
-    if (!generatedImageUrl) throw new Error("Kein Bild generiert.");
-    return generatedImageUrl;
+    throw new Error("Das KI-Ergebnis enthielt keine Bilddaten.");
   } catch (error: any) {
-    console.error("Try-On Error:", error);
-    throw new Error(error.message || "Fehler bei der Anprobe.");
+    console.error("Gemini API Error:", error);
+    
+    const status = error.status || "";
+    const message = error.message || "";
+
+    if (message.includes("API key not valid") || status === "INVALID_ARGUMENT" || message.includes("400")) {
+      throw new Error("API Key ungültig. Bitte lösche den Key in Vercel, kopiere ihn NEU aus AI Studio und mache einen 'Redeploy'.");
+    }
+    
+    if (status === "PERMISSION_DENIED" || message.includes("403") || message.includes("location")) {
+      throw new Error("Zugriff verweigert (403). In der EU ist der kostenlose Gemini-Plan oft eingeschränkt. Bitte aktiviere 'Billing' in deinem Google Cloud Projekt.");
+    }
+
+    throw new Error(message || "Ein technischer Fehler ist aufgetreten.");
   }
 }
 
@@ -146,7 +142,7 @@ export async function urlToBase64(url: string): Promise<string> {
         resolve(canvas.toDataURL('image/png'));
       } else reject(new Error("Canvas Error"));
     };
-    img.onerror = () => reject(new Error("Load Error"));
+    img.onerror = () => reject(new Error("Bild konnte nicht geladen werden."));
     img.src = `https://images.weserv.nl/?url=${encodeURIComponent(url)}`;
   });
 }
